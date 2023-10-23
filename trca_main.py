@@ -66,23 +66,41 @@ class TRCA_main:
         trains = np.zeros((len(classes), self.n_bands, n_samples, n_chans))
         W = np.zeros((self.n_bands, len(classes), n_chans))
 
-        for fb_i in range(self.n_bands):
-            # Filter the signal with fb_i
-            eeg_ex = bandpass(existing, self.sfreq,
-                                Wp=self.filterbank[fb_i][0],
-                                Ws=self.filterbank[fb_i][1])
+        for class_i in classes:
+            print('class_i:',class_i)
+            # Select data with a specific label
+            existing_tmp = existing[..., ex_y == class_i]
+            target_tmp = target[...,tr_y == class_i]
             
-            eeg_tr = bandpass(target, self.sfreq,
-                                Wp=self.filterbank[fb_i][0],
-                                Ws=self.filterbank[fb_i][1])
-            for class_i in classes:
-                # Select data with a specific label
-                eeg_ex_class = eeg_ex[..., ex_y == class_i]
-                eeg_tr = target[...,tr_y == class_i]
-                eeg_trans = np.concatenate((eeg_ex_class,eeg_tr),2)
-                eeg_template, w_best = get_sptialANDtemplate(target, eeg_trans, tr_y, self.filterbank, fb_i, class_i, self.sfreq, self.method)
-                trains[class_i, fb_i] = eeg_template # Store the template
+            for fb_i in range(self.n_bands):
+                # Filter the signal with fb_i
+                eeg_tmp = bandpass(existing_tmp, self.sfreq,
+                                   Wp=self.filterbank[fb_i][0],
+                                   Ws=self.filterbank[fb_i][1])
+                
+                eeg_tr = bandpass(target_tmp, self.sfreq,
+                                  Wp=self.filterbank[fb_i][0],
+                                  Ws=self.filterbank[fb_i][1])
+
+                # cat(多baseline這一部)
+                eeg_tmp = np.concatenate((eeg_tmp,eeg_tr),2)
+                
+                if (eeg_tmp.ndim == 3):
+                    # Compute mean of the signal across trials
+                    trains[class_i, fb_i] = np.mean(eeg_tmp, -1)
+                else:
+                    trains[class_i, fb_i] = eeg_tmp
+                # Find the spatial filter for the corresponding filtered signal
+                # and label
+                if self.method == 'original':
+                    w_best = trca(eeg_tmp)
+                elif self.method == 'fast':
+                    w_best = fast_trca(eeg_tmp)
+                else:
+                    raise ValueError('Invalid `method` option.')
+
                 W[fb_i, class_i, :] = w_best  # Store the spatial filter
+
         self.trains = trains
         self.coef_ = W
         self.classes = classes
@@ -94,23 +112,30 @@ class TRCA_main:
         trains = np.zeros((len(classes), self.n_bands, n_samples, n_chans))
         W = np.zeros((self.n_bands, len(classes), n_chans))
 
-        for fb_i in range(self.n_bands):
-            # Filter the signal with fb_i
-            eeg_ex_tmp = bandpass(existing, self.sfreq,
-                                Wp=self.filterbank[fb_i][0],
-                                Ws=self.filterbank[fb_i][1])
-            eeg_tr_tmp = bandpass(target,self.sfreq,
-                                Wp=self.filterbank[fb_i][0],
-                                Ws=self.filterbank[fb_i][1])
-            for class_i in classes:
-                # Select data with a specific label
-                eeg_ex = eeg_ex_tmp[..., ex_y == class_i]
-                eeg_tr = eeg_tr_tmp[...,tr_y == class_i]
+        for class_i in classes:
+            print('class_i:',class_i)
+            # Select data with a specific label
+            existing_tmp = existing[..., ex_y == class_i]
+            target_tmp = target[...,tr_y == class_i]
+            
+            for fb_i in range(self.n_bands):
+                #print('fb_i:',fb_i)
+                # Filter the signal with fb_i
+                eeg_ex = bandpass(existing_tmp, self.sfreq,
+                                   Wp=self.filterbank[fb_i][0],
+                                   Ws=self.filterbank[fb_i][1])
+                eeg_tr = bandpass(target_tmp,self.sfreq,
+                                   Wp=self.filterbank[fb_i][0],
+                                   Ws=self.filterbank[fb_i][1])
+                ### mean target domain
                 eeg_tr_mean = np.mean(eeg_tr, -1)
+                # print(np.sum(eeg_tr==0))
+                
                 # reshape (375,64,2) -->  (2,64,375)               
                 sample,channel,trail = eeg_ex.shape
                 eeg_ex = eeg_ex.transpose(2,1,0)
                 eeg_tr_mean = eeg_tr_mean.transpose(1,0) # (64,375)
+                
                 # multivariate least-squares regression for each single-trail
                 for i in range(trail):
                     # (2,8,375) --> single-trial (8,375)
@@ -126,17 +151,27 @@ class TRCA_main:
                         eeg_tmp = new_target
                     else:
                         eeg_tmp = np.concatenate((eeg_tmp,new_target),2)
+                eeg_tmp = np.concatenate((eeg_tmp,eeg_tr),2)
+                if (eeg_tmp.ndim == 3):
+                    # Compute mean of the signal across trials
+                    trains[class_i, fb_i] = np.mean(eeg_tmp, -1)
+                else:
+                    trains[class_i, fb_i] = eeg_tmp
+                # Find the spatial filter for the corresponding filtered signal
+                # and label
+                if self.method == 'original':
+                    w_best = trca(eeg_tmp)#fast_trca
+                elif self.method == 'fast':
+                    w_best = fast_trca(eeg_tmp)
+                else:
+                    raise ValueError('Invalid `method` option.')
 
-                eeg_trans = np.concatenate((eeg_tmp,eeg_tr),2)
-                eeg_template, w_best = get_sptialANDtemplate(target, eeg_trans, tr_y, self.filterbank, fb_i, class_i, self.sfreq, self.method)
-                trains[class_i, fb_i] = eeg_template # Store the template
                 W[fb_i, class_i, :] = w_best  # Store the spatial filter
-
         self.trains = trains
         self.coef_ = W
         self.classes = classes
         return self
-    
+
     def fit_WDANet(self, existing_train, existing_valid, target, ex_train_y, ex_valid_y, tr_y, n_tps, train_sub, i_sub, path):
         n_samples, n_chans, _ = theshapeof(existing_train)
         classes = np.unique(ex_train_y)
